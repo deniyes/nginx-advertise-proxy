@@ -1,0 +1,20 @@
+--- nginx-1.6.0/src/http/ngx_http_request.c	2014-04-24 05:52:26.000000000 -0700
++++ nginx-1.6.0/src/http/ngx_http_request.c	2015-11-05 10:06:16.693669574 -0800
+@@ -1018,9 +1018,14 @@
+ 
+             /* there was error while a request line parsing */
+ 
+-            ngx_log_error(NGX_LOG_INFO, c->log, 0,
+-                          ngx_http_client_errors[rc - NGX_HTTP_CLIENT_ERROR]);
+-            ngx_http_finalize_request(r, NGX_HTTP_BAD_REQUEST);
++            if (ngx_strncasecmp(r->request_start, (u_char*)"CONNECT", 7) == 0) {
++                r->err_status = NGX_HTTP_TO_HTTPS;
++                ngx_http_finalize_request(r, NGX_HTTP_TO_HTTPS);
++            } else {
++                ngx_log_error(NGX_LOG_INFO, c->log, 0,
++                    ngx_http_client_errors[rc - NGX_HTTP_CLIENT_ERROR]);
++                ngx_http_finalize_request(r, NGX_HTTP_BAD_REQUEST);
++            }
+             return;
+         }
+ 
