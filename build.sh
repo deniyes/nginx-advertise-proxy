@@ -4,7 +4,6 @@ tar zxvf nginx-1.6.0.tar.gz
 patch  -p0  < https.patch
 
 cd nginx-1.6.0/
-
 #CFLAGS="-g -O0" ./configure --prefix=/etc/nginx \
 ./configure --prefix=/etc/nginx \
 --sbin-path=/usr/sbin/nginx  \
