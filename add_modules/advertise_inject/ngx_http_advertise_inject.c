@@ -20,9 +20,11 @@
 
 typedef struct {
     ngx_flag_t                   inject;
+    ngx_int_t                    flag;
     ngx_int_t                    index;
     size_t                       buffer_size;
     size_t                       max_advertise_len;
+    ngx_str_t                    location_str;
     ngx_array_t                 *advertise_array;
 }ngx_http_advertise_conf_t;
 
@@ -61,10 +63,23 @@ static char *ngx_http_advertise_merge_loc_conf(ngx_conf_t *cf,
 
 static ngx_command_t  ngx_http_advertise_commands[] = {
     { ngx_string("advertise"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG
+                                                              |NGX_HTTP_LIF_CONF,
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_advertise_conf_t, inject),
+      NULL },
+    { ngx_string("advertise_location"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_advertise_conf_t, location_str),
+      NULL },  
+    { ngx_string("advertise_flag"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_advertise_conf_t, flag),
       NULL },
     { ngx_string("advertise_buffer"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
@@ -356,14 +371,16 @@ ngx_http_advertise_process(ngx_http_request_t *r)
     ngx_int_t        res = NGX_OK;
     ngx_str_t       *adver = NULL;
     ngx_http_advertise_ctx_t  *ctx;
+    ngx_http_advertise_conf_t *conf;
 
     r->connection->buffered &= ~NGX_HTTP_ADVERTISE_BUFFERED;  
     ctx = ngx_http_get_module_ctx(r, ngx_http_advertise_module);
-
-    index = ngx_strlcasestrn(ctx->html, ctx->last, (u_char*)"</head>", 7 - 1);
+    conf = ngx_http_get_module_loc_conf(r, ngx_http_advertise_module);
+    
+    index = ngx_strlcasestrn(ctx->html, ctx->last, conf->location_str.data, conf->location_str.len - 1);
     if (index) {
         adver = ngx_http_advertise_get_random(r);
-        ngx_memmove(index + adver->len, index, ctx->last - index);
+        ngx_memmove(index + (conf->index == 0) ? conf->location_str.len: 0?, index, ctx->last - index);
         ngx_memcpy(index, adver->data, adver->len);
         ctx->last += adver->len;
         ctx->target = adver;
@@ -518,6 +535,7 @@ ngx_http_advertise_create_loc_conf(ngx_conf_t *cf)
     accf->buffer_size = NGX_CONF_UNSET_SIZE;
     accf->advertise_array = NGX_CONF_UNSET_PTR;
     accf->max_advertise_len = 0;
+    accf->flag = NGX_CONF_UNSET;
 
     return accf;
 }
@@ -558,6 +576,7 @@ ngx_http_advertise_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->buffer_size, prev->buffer_size, 1 * 1024 * 1024);
     ngx_conf_merge_ptr_value(conf->advertise_array, prev->advertise_array, NGX_CONF_UNSET_PTR);
     ngx_conf_merge_uint_value(conf->max_advertise_len, prev->max_advertise_len, 0);
+    ngx_conf_merge_uint_value(conf->flag, prev->flag, 0);
     
 
     var = ngx_http_add_variable(cf, &g_advertise_inject_ctx_s, NGX_HTTP_VAR_CHANGEABLE);
