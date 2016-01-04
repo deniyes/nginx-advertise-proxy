@@ -20,11 +20,12 @@
 
 typedef struct {
     ngx_flag_t                   inject;
-    ngx_int_t                    flag;
     ngx_int_t                    index;
+    ngx_uint_t                   ad_location;
     size_t                       buffer_size;
     size_t                       max_advertise_len;
-    ngx_str_t                    location_str;
+    ngx_str_t                    anchor_string;
+    ngx_array_t                 *black_hosts;
     ngx_array_t                 *advertise_array;
 }ngx_http_advertise_conf_t;
 
@@ -47,6 +48,11 @@ static ngx_str_t g_advertise_status_s = ngx_string("advertise_status");
 static ngx_int_t ngx_http_advertise_init(ngx_conf_t *cf);
 static char *ngx_http_advertise_list(ngx_conf_t *cf, 
                     ngx_command_t *cmd, void *conf);
+static char *ngx_http_advertise_blackhosts(ngx_conf_t *cf, 
+                    ngx_command_t *cmd, void *conf);
+static char *ngx_http_advertise_blackhost(ngx_conf_t *cf, 
+                    ngx_command_t *cmd, void *conf);
+
 static char *ngx_http_advertise_item(ngx_conf_t *cf, 
                     ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_advertise_process(ngx_http_request_t *r);
@@ -63,29 +69,35 @@ static char *ngx_http_advertise_merge_loc_conf(ngx_conf_t *cf,
 
 static ngx_command_t  ngx_http_advertise_commands[] = {
     { ngx_string("advertise"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG
-                                                              |NGX_HTTP_LIF_CONF,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_advertise_conf_t, inject),
       NULL },
-    { ngx_string("advertise_location"),
+    { ngx_string("anchor_string"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
       ngx_conf_set_str_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_advertise_conf_t, location_str),
+      offsetof(ngx_http_advertise_conf_t, anchor_string),
       NULL },  
     { ngx_string("advertise_flag"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
       ngx_conf_set_num_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_advertise_conf_t, flag),
+      offsetof(ngx_http_advertise_conf_t, ad_location),
       NULL },
     { ngx_string("advertise_buffer"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_advertise_conf_t, buffer_size),
+      NULL },
+    { ngx_string("advertise_black"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF
+                                          |NGX_CONF_BLOCK|NGX_CONF_NOARGS,
+      ngx_http_advertise_blackhosts,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
       NULL },
     { ngx_string("advertise_list"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF
@@ -179,6 +191,103 @@ ngx_http_advertise_item(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
+static char *
+ngx_http_advertise_blackhosts(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_advertise_conf_t *accf = conf;
+
+    char        *rv;
+    ngx_conf_t   save;
+
+    if (accf->black_hosts== NGX_CONF_UNSET_PTR) {
+        accf->black_hosts = ngx_array_create(cf->pool, 16, sizeof(ngx_regex_elt_t));
+        if (accf->black_hosts == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    save = *cf;
+    cf->handler = ngx_http_advertise_blackhost;
+    cf->handler_conf = conf;
+
+    rv = ngx_conf_parse(cf, NULL);
+    *cf = save;
+
+    return rv;
+}
+
+
+static char *
+ngx_http_advertise_blackhost(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_advertise_conf_t  *accf = conf;
+
+#if (NGX_PCRE)
+
+    ngx_str_t            *value;
+    ngx_uint_t            i;
+    ngx_regex_elt_t      *re;
+    ngx_regex_elt_t      *tmp;
+    ngx_regex_compile_t   rc;
+    u_char                errstr[NGX_MAX_CONF_ERRSTR];
+
+    value = cf->args->elts;
+    
+    ngx_memzero(&rc, sizeof(ngx_regex_compile_t));
+
+    rc.pool = cf->pool;
+    rc.err.len = NGX_MAX_CONF_ERRSTR;
+    rc.err.data = errstr;
+
+    tmp = accf->black_hosts->elts;
+
+    for (i = 0; i < accf->black_hosts->nelts; i++) {
+        if (ngx_strncasecmp(value[0].data, tmp[i].name, value[0].len) == 0) {
+            return NGX_CONF_OK;
+        }
+    }
+
+    re = ngx_array_push(accf->black_hosts);
+    if (re == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    rc.pattern = value[0];
+    rc.options = NGX_REGEX_CASELESS;
+
+    if (ngx_regex_compile(&rc) != NGX_OK) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "%V", &rc.err);
+        return NGX_CONF_ERROR;
+    }
+
+    re->regex = rc.regex;
+    re->name = value[0].data;
+
+    return NGX_CONF_OK;
+#else
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "without PCRE library \"advert filter\" supports ");
+    return NGX_CONF_ERROR;
+#endif
+}
+
+static ngx_uint_t
+ngx_http_blackhosts_test(ngx_http_request_t *r)
+{
+    
+    ngx_str_t                       s;
+    ngx_http_advertise_conf_t       *accf = ngx_http_get_module_loc_conf(r, ngx_http_advertise_module);
+    s.len = r->host_end - r->host_start;
+    s.data = r->host_start;
+
+    if (accf->black_hosts != NGX_CONF_UNSET_PTR) {
+        if (NGX_OK == ngx_regex_exec_array(accf->black_hosts, &s, r->pool->log)) {
+            return NGX_OK;
+        }
+    }
+    return NGX_ERROR;
+}
+
 
 static ngx_int_t
 ngx_http_advertise_header_filter(ngx_http_request_t *r)
@@ -211,8 +320,12 @@ ngx_http_advertise_header_filter(ngx_http_request_t *r)
         || conf->max_advertise_len == 0) {
         return ngx_http_next_header_filter(r);
     }
+
+    if (ngx_http_blackhosts_test(r) == NGX_OK) {
+        return ngx_http_next_header_filter(r);
+    }
     
-    vv = ngx_http_get_indexed_variable(r, conf->index);
+    vv = ngx_http_get_indexed_variable(r, (ngx_uint_t)conf->index);
     if (vv == NULL) {
         return NGX_ERROR;
     }
@@ -377,11 +490,21 @@ ngx_http_advertise_process(ngx_http_request_t *r)
     ctx = ngx_http_get_module_ctx(r, ngx_http_advertise_module);
     conf = ngx_http_get_module_loc_conf(r, ngx_http_advertise_module);
     
-    index = ngx_strlcasestrn(ctx->html, ctx->last, conf->location_str.data, conf->location_str.len - 1);
+    index = ngx_strlcasestrn(ctx->html, ctx->last, conf->anchor_string.data, conf->anchor_string.len - 1);
     if (index) {
         adver = ngx_http_advertise_get_random(r);
-        ngx_memmove(index + (conf->index == 0) ? conf->location_str.len: 0?, index, ctx->last - index);
-        ngx_memcpy(index, adver->data, adver->len);
+      if (conf->ad_location == 0) {
+            ngx_memmove(index + adver->len, index, ctx->last - index);
+            ngx_memcpy(index, adver->data, adver->len);
+      } else {
+          index += conf->anchor_string.len;
+         if (index >= ctx->last) {
+                ngx_http_advertise_set_status(r, 7);
+            return NGX_ERROR;
+         }
+            ngx_memmove(index + adver->len, index, ctx->last - index);
+            ngx_memcpy(index, adver->data, adver->len);
+      }
         ctx->last += adver->len;
         ctx->target = adver;
     } else {
@@ -502,7 +625,7 @@ ngx_http_status_gethandler(ngx_http_request_t *r,
     
     accf = ngx_http_get_module_loc_conf(r, ngx_http_advertise_module);
 
-    vv = ngx_http_get_indexed_variable(r, accf->index);
+    vv = ngx_http_get_indexed_variable(r, (ngx_uint_t)accf->index);
     if (vv == NULL) {
         return NGX_ERROR;
     }
@@ -535,7 +658,11 @@ ngx_http_advertise_create_loc_conf(ngx_conf_t *cf)
     accf->buffer_size = NGX_CONF_UNSET_SIZE;
     accf->advertise_array = NGX_CONF_UNSET_PTR;
     accf->max_advertise_len = 0;
-    accf->flag = NGX_CONF_UNSET;
+    accf->ad_location = NGX_CONF_UNSET_UINT;
+    ngx_str_null(&accf->anchor_string);
+#if (NGX_PCRE)
+    accf->black_hosts = NGX_CONF_UNSET_PTR;
+#endif
 
     return accf;
 }
@@ -550,7 +677,7 @@ ngx_http_advertise_set_status(ngx_http_request_t *r, ngx_uint_t advertise_pass)
         
     accf = ngx_http_get_module_loc_conf(r, ngx_http_advertise_module);
 
-    vv = ngx_http_get_indexed_variable(r, accf->index);
+    vv = ngx_http_get_indexed_variable(r, (ngx_uint_t)accf->index);
     if (vv == NULL) {
         return NGX_ERROR;
     }
@@ -576,8 +703,12 @@ ngx_http_advertise_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->buffer_size, prev->buffer_size, 1 * 1024 * 1024);
     ngx_conf_merge_ptr_value(conf->advertise_array, prev->advertise_array, NGX_CONF_UNSET_PTR);
     ngx_conf_merge_uint_value(conf->max_advertise_len, prev->max_advertise_len, 0);
-    ngx_conf_merge_uint_value(conf->flag, prev->flag, 0);
+    ngx_conf_merge_uint_value(conf->ad_location, prev->ad_location, 0);
+    ngx_conf_merge_str_value(conf->anchor_string, prev->anchor_string, "</head>");
     
+#if (NGX_PCRE)
+    ngx_conf_merge_ptr_value(conf->black_hosts, prev->black_hosts, NGX_CONF_UNSET_PTR)
+#endif
 
     var = ngx_http_add_variable(cf, &g_advertise_inject_ctx_s, NGX_HTTP_VAR_CHANGEABLE);
     if (var == NULL) {
@@ -588,6 +719,7 @@ ngx_http_advertise_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->index == NGX_ERROR) {
         return NGX_CONF_ERROR;
     }
+    
     
     var->get_handler = ngx_http_g_ctx_gethandler;
     var->data = conf->index;
