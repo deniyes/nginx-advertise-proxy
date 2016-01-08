@@ -16,6 +16,7 @@ typedef struct {
     ngx_int_t                      index;
     ngx_hash_t                     ports;
     ngx_array_t                   *block_ports;
+    ngx_array_t                   *black_hosts;
     ngx_array_t                   *proxy_lengths;
     ngx_array_t                   *proxy_values;
 } ngx_http_proxy_connect_loc_conf_t;
@@ -36,6 +37,10 @@ static void ngx_http_proxy_connect_finalize_request(ngx_http_request_t *r,
 static void *ngx_http_proxy_connect_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_proxy_connect_merge_loc_conf(ngx_conf_t *cf,
     void *parent, void *child);
+static char *ngx_http_proxy_connect_blackhosts(ngx_conf_t *cf, 
+	ngx_command_t *cmd, void *conf);
+static char *ngx_http_proxy_connect_blackhost(ngx_conf_t *cf, 
+	ngx_command_t *cmd, void *conf);
 
 static char *ngx_http_proxy_connect_pass(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
@@ -64,8 +69,16 @@ static ngx_command_t  ngx_http_proxy_connect_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
+     
+    { ngx_string("block_connect_hosts"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF
+                                          |NGX_CONF_BLOCK|NGX_CONF_NOARGS,
+      ngx_http_proxy_connect_blackhosts,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
     
-    { ngx_string("block_ports"),
+    { ngx_string("block_connect_ports"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_http_types_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -153,6 +166,90 @@ ngx_module_t  ngx_http_proxy_connect_module = {
 static ngx_str_t ngx_http_proxy_connect_success = ngx_string("HTTP/1.1 200 Connection established\r\n\r\n");
 static ngx_buf_t ngx_http_proxy_connect_buf;
 static ngx_chain_t  ngx_http_proxy_connect_chain = {&ngx_http_proxy_connect_buf, NULL};
+
+
+
+static char *
+ngx_http_proxy_connect_blackhosts(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_proxy_connect_loc_conf_t *pccf = conf;
+
+    char        *rv;
+    ngx_conf_t   save;
+
+    if (pccf->black_hosts== NGX_CONF_UNSET_PTR) {
+        pccf->black_hosts = ngx_array_create(cf->pool, 16, sizeof(ngx_regex_elt_t));
+        if (pccf->black_hosts == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    save = *cf;
+    cf->handler = ngx_http_proxy_connect_blackhost;
+    cf->handler_conf = conf;
+
+    rv = ngx_conf_parse(cf, NULL);
+    *cf = save;
+
+    return rv;
+}
+
+
+
+static char *
+ngx_http_proxy_connect_blackhost(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_proxy_connect_loc_conf_t  *pccf = conf;
+
+#if (NGX_PCRE)
+
+    ngx_str_t            *value;
+    ngx_uint_t            i;
+    ngx_regex_elt_t      *re;
+    ngx_regex_elt_t      *tmp;
+    ngx_regex_compile_t   rc;
+    u_char                errstr[NGX_MAX_CONF_ERRSTR];
+
+    value = cf->args->elts;
+    
+    ngx_memzero(&rc, sizeof(ngx_regex_compile_t));
+
+    rc.pool = cf->pool;
+    rc.err.len = NGX_MAX_CONF_ERRSTR;
+    rc.err.data = errstr;
+
+    tmp = pccf->black_hosts->elts;
+
+    for (i = 0; i < pccf->black_hosts->nelts; i++) {
+        if (ngx_strncasecmp(value[0].data, tmp[i].name, value[0].len) == 0) {
+            return NGX_CONF_OK;
+        }
+    }
+
+    re = ngx_array_push(pccf->black_hosts);
+    if (re == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    rc.pattern = value[0];
+    rc.options = NGX_REGEX_CASELESS;
+
+    if (ngx_regex_compile(&rc) != NGX_OK) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "%V", &rc.err);
+        return NGX_CONF_ERROR;
+    }
+
+    re->regex = rc.regex;
+    re->name = value[0].data;
+
+    return NGX_CONF_OK;
+#else
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "without PCRE library \"advert filter\" supports ");
+    return NGX_CONF_ERROR;
+#endif
+}
+
 
 static ngx_int_t
 ngx_http_proxy_connect_eval(ngx_http_request_t *r, ngx_http_proxy_connect_ctx_t *ctx,
@@ -323,9 +420,9 @@ ngx_http_proxy_connect_read_hello_data(ngx_http_request_t *r)
 void *
 ngx_http_proxy_connect_test_block_ports(ngx_http_request_t *r)
 {
-    size_t      len;
-    ngx_uint_t  i, hash;
-    ngx_hash_t *ports_hash = NULL;
+    size_t                            len;
+    ngx_uint_t                        i, hash;
+    ngx_hash_t                        *ports_hash = NULL;
     ngx_http_proxy_connect_loc_conf_t *conf;
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_proxy_connect_module);
@@ -344,6 +441,19 @@ ngx_http_proxy_connect_test_block_ports(ngx_http_request_t *r)
     return ngx_hash_find(ports_hash, hash, r->port_start, len);
 }
 
+static ngx_uint_t
+ngx_http_proxy_connect_test_black_hosts(ngx_http_request_t *r)
+{
+    ngx_http_proxy_connect_loc_conf_t     *pccf = ngx_http_get_module_loc_conf(r, ngx_http_proxy_connect_module);
+  
+    if (pccf->black_hosts != NGX_CONF_UNSET_PTR) {
+        if (NGX_OK == ngx_regex_exec_array(pccf->black_hosts, &r->headers_in.server, r->pool->log)) {
+            return NGX_OK;
+        }
+    }
+    return NGX_ERROR;
+}
+
 
 ngx_int_t 
 ngx_http_proxy_connect_handler(ngx_http_request_t *r)
@@ -352,10 +462,16 @@ ngx_http_proxy_connect_handler(ngx_http_request_t *r)
     ngx_int_t                               rc;
     ngx_buf_t                               *b;
     ngx_http_proxy_connect_ctx_t            *ctx;
+    ngx_http_proxy_connect_loc_conf_t       *pccf = ngx_http_get_module_loc_conf(r, ngx_http_proxy_connect_module);
     if (!(r->method & (NGX_HTTP_CONNECT)) \
         || ngx_http_proxy_connect_test_block_ports(r)) 
     {
         return NGX_HTTP_NOT_ALLOWED;
+    }
+    if (pccf->black_hosts != NGX_CONF_UNSET_PTR) {
+        if (NGX_OK == ngx_http_proxy_connect_test_black_hosts(r)) {
+            return NGX_HTTP_NOT_ALLOWED;
+        }
     }
     ngx_http_proxy_connect_buf.pos = ngx_http_proxy_connect_success.data;
     ngx_http_proxy_connect_buf.last = ngx_http_proxy_connect_success.data \
@@ -511,6 +627,7 @@ ngx_http_proxy_connect_create_loc_conf(ngx_conf_t *cf)
     conf->upstream.pass_request_body = 0;
 
     conf->index = NGX_CONF_UNSET;
+    conf->black_hosts = NGX_CONF_UNSET_PTR;
 
     return conf;
 }
@@ -530,6 +647,9 @@ ngx_http_proxy_connect_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     {
         return NGX_CONF_ERROR;
     }
+#if (NGX_PCRE)
+    ngx_conf_merge_ptr_value(conf->black_hosts, prev->black_hosts, NGX_CONF_UNSET_PTR)
+#endif
 
     ngx_conf_merge_msec_value(conf->upstream.connect_timeout,
                               prev->upstream.connect_timeout, 60000);
