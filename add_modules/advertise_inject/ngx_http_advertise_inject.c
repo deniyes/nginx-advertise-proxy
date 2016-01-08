@@ -281,14 +281,10 @@ ngx_http_advertise_blackhost(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 static ngx_uint_t
 ngx_http_blackhosts_test(ngx_http_request_t *r)
 {
-    
-    ngx_str_t                       s;
     ngx_http_advertise_conf_t       *accf = ngx_http_get_module_loc_conf(r, ngx_http_advertise_module);
-    s.len = r->host_end - r->host_start;
-    s.data = r->host_start;
-
+    
     if (accf->black_hosts != NGX_CONF_UNSET_PTR) {
-        if (NGX_OK == ngx_regex_exec_array(accf->black_hosts, &s, r->pool->log)) {
+        if (NGX_OK == ngx_regex_exec_array(accf->black_hosts, &r->headers_in.server, r->pool->log)) {
             return NGX_OK;
         }
     }
