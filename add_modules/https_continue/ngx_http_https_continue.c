@@ -185,7 +185,12 @@ ngx_http_https_continue_header_filter(ngx_http_request_t *r)
     if (ngx_http_https_continue_parse_line(r) != NGX_OK) {
         return ngx_http_next_header_filter(r);
     }
-        
+    ngx_http_core_srv_conf_t *cscf = \
+        ngx_http_get_module_srv_conf(r, ngx_http_core_module);
+    if (!r->connection->read->timer_set) {
+        ngx_add_timer(r->connection->read, cscf->client_header_timeout);
+    }
+       
     r->method = NGX_HTTP_CONNECT;
     r->err_status = NGX_HTTP_OK;
     r->headers_out.status = NGX_HTTP_OK;

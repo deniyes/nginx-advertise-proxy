@@ -38,9 +38,9 @@ static void *ngx_http_proxy_connect_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_proxy_connect_merge_loc_conf(ngx_conf_t *cf,
     void *parent, void *child);
 static char *ngx_http_proxy_connect_blackhosts(ngx_conf_t *cf, 
-	ngx_command_t *cmd, void *conf);
+    ngx_command_t *cmd, void *conf);
 static char *ngx_http_proxy_connect_blackhost(ngx_conf_t *cf, 
-	ngx_command_t *cmd, void *conf);
+    ngx_command_t *cmd, void *conf);
 
 static char *ngx_http_proxy_connect_pass(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
@@ -485,13 +485,6 @@ ngx_http_proxy_connect_handler(ngx_http_request_t *r)
     rc = ngx_http_output_filter(r, &ngx_http_proxy_connect_chain);
     if (rc != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-    
-    ngx_http_core_srv_conf_t *cscf = \
-        ngx_http_get_module_srv_conf(r, ngx_http_core_module);
-    if (!r->connection->read->timer_set) {
-        cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
-        ngx_add_timer(r->connection->read, cscf->client_header_timeout);
     }
     
     ctx = ngx_palloc(r->pool, sizeof(ngx_http_proxy_connect_ctx_t));
